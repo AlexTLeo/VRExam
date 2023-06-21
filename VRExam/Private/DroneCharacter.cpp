@@ -2,6 +2,7 @@
 
 
 #include "DroneCharacter.h"
+#include "Kismet/KismetMathLibrary.h"
 
 // Sets default values
 ADroneCharacter::ADroneCharacter()
@@ -9,6 +10,14 @@ ADroneCharacter::ADroneCharacter()
  	// Set this character to call Tick() every frame.  You can turn this off to improve performance if you don't need it.
 	PrimaryActorTick.bCanEverTick = true;
 
+	FPSCameraComponent = CreateDefaultSubobject<UCameraComponent>(TEXT("FirstPersonCamera"));
+	check(FPSCameraComponent != nullptr);
+	FPSCameraComponent->SetupAttachment(GetMesh());	
+	FPSCameraComponent->SetRelativeLocation(FVector(0, 0, 0));
+	FPSCameraComponent->bUsePawnControlRotation = true;
+
+	GrabbedObjectLocation = CreateDefaultSubobject<USceneComponent>(TEXT("GrabbedObjectLocation"));
+	GrabbedObjectLocation->SetupAttachment(FPSCameraComponent);
 }
 
 // Called when the game starts or when spawned
@@ -32,6 +41,10 @@ void ADroneCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComp
 {
 	Super::SetupPlayerInputComponent(PlayerInputComponent);
 
+	// Set up "grab"
+	PlayerInputComponent->BindAction("Grab", IE_Pressed, this, &ADroneCharacter::OnGrab);
+	PlayerInputComponent->BindAction("Grab", IE_Released, this, &ADroneCharacter::EndGrab);
+
 	// Set up "movement" bindings.
 	PlayerInputComponent->BindAxis("MoveForward", this, &ADroneCharacter::MoveForward);
 	PlayerInputComponent->BindAxis("MoveRight", this, &ADroneCharacter::MoveRight);
@@ -40,6 +53,51 @@ void ADroneCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComp
 	// Set up "look" bindings.
 	PlayerInputComponent->BindAxis("Turn", this, &ADroneCharacter::AddControllerYawInput);
 	PlayerInputComponent->BindAxis("LookUp", this, &ADroneCharacter::AddControllerPitchInput);
+}
+
+void ADroneCharacter::OnGrab() {
+	const FCollisionQueryParams QueryParams("GrabRayTrace", false, this); // Ignore player
+	const float TraceRange = 5000.0f;
+	const FVector StartTrace = FPSCameraComponent->GetComponentLocation();
+	const FVector EndTrace = (FPSCameraComponent->GetForwardVector() * TraceRange) + StartTrace;
+	FHitResult Hit;
+
+	// Ray trace
+	if (GetWorld()->LineTraceSingleByChannel(Hit, StartTrace, EndTrace, ECC_Visibility, QueryParams)) {
+		if (UPrimitiveComponent* Prim = Hit.GetComponent()) {
+			if (Prim->IsSimulatingPhysics()) {
+				SetGrabbedObject(Prim);
+			}
+		}
+	}
+}
+
+void ADroneCharacter::EndGrab() {
+	// Check if we actually have an object grabbed
+	if (GrabbedObject) {
+		const float ThrowStrength = 50.0f;
+		const FVector ThrowVelocity = FPSCameraComponent->GetForwardVector() * ThrowStrength;
+
+		GrabbedObject->DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);
+		GrabbedObject->SetSimulatePhysics(true); // Turn physics back on for grabbed object
+		GrabbedObject->AddImpulse(ThrowVelocity, NAME_None, true);
+
+		SetGrabbedObject(nullptr);
+	}
+}
+
+void ADroneCharacter::SetGrabbedObject(UPrimitiveComponent* ObjectToGrab) {
+	GrabbedObject = ObjectToGrab;
+
+	if (GrabbedObject) {
+		GrabbedObject->SetSimulatePhysics(false); // Momentarily turn physics off for grabbed object
+		// Align the object to the centre of the screen
+		FTransform wTo = GrabbedObject->GetComponentTransform();
+		FVector CoM = UKismetMathLibrary::InverseTransformLocation(wTo, GrabbedObject->GetCenterOfMass());
+		CoM.Z = 0;
+		GrabbedObjectLocation->SetRelativeLocation(CoM);
+		GrabbedObject->AttachToComponent(GrabbedObjectLocation, FAttachmentTransformRules::SnapToTargetNotIncludingScale);
+	}
 }
 
 void ADroneCharacter::MoveForward(float Value)
