@@ -25,6 +25,21 @@ protected:
 	virtual void BeginPlay() override;
 
 public:
+	UPROPERTY()
+		UPrimitiveComponent* GrabbedObject;
+	UPROPERTY()
+		TArray<AActor*> AllMagneticHooks; /// Contains all magnetic hooks
+	UPROPERTY()
+		AActor* ClosestMagneticHook;
+	UPROPERTY()
+		double DistanceToClosestHook;
+	UPROPERTY()
+		double MinDistanceToMagHook; /// Minimum distance to allow object to be magnetically hooked
+	UPROPERTY(VisibleAnywhere)
+		class UCameraComponent* FPSCameraComponent;
+	UPROPERTY(EditDefaultsOnly, Category = Components)
+		class USceneComponent* GrabbedObjectLocation;
+
 	// Called every frame
 	virtual void Tick(float DeltaTime) override;
 
@@ -39,16 +54,19 @@ public:
 	UFUNCTION()
 		void EndGrab();
 
-	UPROPERTY()
-		UPrimitiveComponent* GrabbedObject;
-
-	UPROPERTY(VisibleAnywhere)
-		class UCameraComponent* FPSCameraComponent;
-
-	UPROPERTY(EditDefaultsOnly, Category = Components)
-		class USceneComponent* GrabbedObjectLocation;
-
+	/// <summary>
+	/// Move the targeted object to float in front of the player and highlight magnetic hooks.
+	/// </summary>
+	/// <param name="ObjectToGrab">Targeted object</param>
 	void SetGrabbedObject(UPrimitiveComponent* ObjectToGrab);
+
+	/// <summary>
+	/// Check for any nearby magnetic hooks. A line will be drawn
+	/// from the grabbed object to the closest hook specifically. 
+	/// If the closest hook is close enough, the grabbed object will glow and,
+	/// when released, it will attach to the magnetic hook.
+	/// </summary>
+	void CheckNearbyMagneticHooks();
 
 	/// Handles input for moving forward and backward.
 	UFUNCTION()

@@ -3,6 +3,7 @@
 
 #include "DroneCharacter.h"
 #include "Kismet/KismetMathLibrary.h"
+#include "Kismet/GameplayStatics.h" 
 
 // Sets default values
 ADroneCharacter::ADroneCharacter()
@@ -18,6 +19,9 @@ ADroneCharacter::ADroneCharacter()
 
 	GrabbedObjectLocation = CreateDefaultSubobject<USceneComponent>(TEXT("GrabbedObjectLocation"));
 	GrabbedObjectLocation->SetupAttachment(FPSCameraComponent);
+
+	MinDistanceToMagHook = 200;
+	DistanceToClosestHook = INT_MAX;
 }
 
 // Called when the game starts or when spawned
@@ -34,6 +38,7 @@ void ADroneCharacter::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
 
+	// CheckNearbyMagneticHooks();
 }
 
 // Called to bind functionality to input
@@ -62,10 +67,14 @@ void ADroneCharacter::OnGrab() {
 	const FVector EndTrace = (FPSCameraComponent->GetForwardVector() * TraceRange) + StartTrace;
 	FHitResult Hit;
 
+	// Reset this
+	ClosestMagneticHook = nullptr;
+	DistanceToClosestHook = INT_MAX;
+
 	// Ray trace
 	if (GetWorld()->LineTraceSingleByChannel(Hit, StartTrace, EndTrace, ECC_Visibility, QueryParams)) {
 		if (UPrimitiveComponent* Prim = Hit.GetComponent()) {
-			if (Prim->IsSimulatingPhysics()) {
+			if (Prim->ComponentHasTag("SpawnableProp")) {
 				SetGrabbedObject(Prim);
 			}
 		}
@@ -75,14 +84,28 @@ void ADroneCharacter::OnGrab() {
 void ADroneCharacter::EndGrab() {
 	// Check if we actually have an object grabbed
 	if (GrabbedObject) {
-		const float ThrowStrength = 50.0f;
-		const FVector ThrowVelocity = FPSCameraComponent->GetForwardVector() * ThrowStrength;
+		// Check if we are near a magnetic hook or not
+		if (ClosestMagneticHook && DistanceToClosestHook <= 200) {
+			// If so, attach the object to the mag hook
+			GrabbedObject->DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);
+			USceneComponent* MagSocketLocation = Cast<USceneComponent>(ClosestMagneticHook->GetComponentByClass(USceneComponent::StaticClass()));
 
-		GrabbedObject->DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);
-		GrabbedObject->SetSimulatePhysics(true); // Turn physics back on for grabbed object
-		GrabbedObject->AddImpulse(ThrowVelocity, NAME_None, true);
+			FTransform wTo = GrabbedObject->GetComponentTransform();
+			FVector CoM = UKismetMathLibrary::InverseTransformLocation(wTo, GrabbedObject->GetCenterOfMass());
+			MagSocketLocation->SetRelativeLocation(CoM);
 
-		SetGrabbedObject(nullptr);
+			GrabbedObject->AttachToComponent(MagSocketLocation, FAttachmentTransformRules::SnapToTargetNotIncludingScale, FName(TEXT("MagneticSocket")));
+		} else {
+			// If not near a magnetic hook, simply release the object
+			const float ThrowStrength = 50.0f;
+			const FVector ThrowVelocity = FPSCameraComponent->GetForwardVector() * ThrowStrength;
+
+			GrabbedObject->DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);
+			GrabbedObject->SetSimulatePhysics(true); // Turn physics back on for grabbed object
+			GrabbedObject->AddImpulse(ThrowVelocity, NAME_None, true);
+
+			SetGrabbedObject(nullptr);
+		}
 	}
 }
 
@@ -94,9 +117,16 @@ void ADroneCharacter::SetGrabbedObject(UPrimitiveComponent* ObjectToGrab) {
 		// Align the object to the centre of the screen
 		FTransform wTo = GrabbedObject->GetComponentTransform();
 		FVector CoM = UKismetMathLibrary::InverseTransformLocation(wTo, GrabbedObject->GetCenterOfMass());
-		CoM.Z = 0;
+		CoM.X += 200;
+		CoM.Z = (-CoM.Z);
 		GrabbedObjectLocation->SetRelativeLocation(CoM);
 		GrabbedObject->AttachToComponent(GrabbedObjectLocation, FAttachmentTransformRules::SnapToTargetNotIncludingScale);
+
+		// Highlight all magnetic hooks
+		// TODO
+		CheckNearbyMagneticHooks();
+
+		UE_LOG(LogTemp, Warning, TEXT("Number of detected hooks: %d"), AllMagneticHooks.Num());
 	}
 }
 
@@ -105,6 +135,34 @@ void ADroneCharacter::MoveForward(float Value)
 	// Find out which way is "forward" and record that the player wants to move that way.
 	FVector Direction = FRotationMatrix(Controller->GetControlRotation()).GetUnitAxis(EAxis::X);
 	AddMovementInput(Direction, Value);
+}
+
+void ADroneCharacter::CheckNearbyMagneticHooks() {
+	// Get all magnetic hooks in the world
+	UGameplayStatics::GetAllActorsWithTag(GetWorld(), FName("MagneticHook"), AllMagneticHooks);
+
+	// If grabbed object, calculate the distances from the grabbed object to the hooks and find the closest
+	if (GrabbedObject && AllMagneticHooks.Num() > 0) {
+		TArray<double> DistancesToHooks;
+		DistancesToHooks.Init(-1, AllMagneticHooks.Num());
+		DistanceToClosestHook = INT_MAX;
+		int IndexOfClosestHook = 0;
+
+		int i = 0;
+		for (AActor* Hook : AllMagneticHooks) {
+			DistancesToHooks[i] = FVector3d::Distance(Hook->GetActorLocation(), GrabbedObject->GetCenterOfMass());
+
+			// Save the index for the closest hook
+			if (DistancesToHooks[i] < DistanceToClosestHook) {
+				DistanceToClosestHook = DistancesToHooks[i];
+				IndexOfClosestHook = i;
+			}
+			
+			i++;
+		}
+
+		ClosestMagneticHook = AllMagneticHooks[IndexOfClosestHook];
+	}
 }
 
 void ADroneCharacter::MoveRight(float Value)
