@@ -6,6 +6,8 @@
 #include "GameFramework/Character.h"
 #include "Camera/CameraComponent.h" 
 #include "Components/CapsuleComponent.h"
+#include "PhysicsEngine/PhysicsConstraintComponent.h" 
+#include "MagCrateComponent.h"
 
 #include "DroneCharacter.generated.h"
 
@@ -20,13 +22,35 @@ public:
 	/// Sets default values for this character's properties
 	ADroneCharacter();
 
-protected:
 	// Called when the game starts or when spawned
 	virtual void BeginPlay() override;
 
-public:
+	/// Cleanup when game ends
+	//virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+
+	/*
+	* HUD
+	*/
+	UPROPERTY(EditAnywhere)
+		TSubclassOf<class UMyUI> PlayerUIClass;
+
+	UPROPERTY(EditAnywhere)
+		TSubclassOf<class UMyEndingScreenUI> EndingScreenUIClass;
+
+	UPROPERTY()
+		class UMyUI* PlayerUI;
+
+	UPROPERTY()
+		class UMyEndingScreenUI* EndingScreenUI;
+
+	/*
+	* Everything else
+	*/
+
 	UPROPERTY()
 		UPrimitiveComponent* GrabbedObject;
+	UPROPERTY()
+		UMagCrateComponent* GrabbedObjectCrateHandler;
 	UPROPERTY()
 		TArray<AActor*> AllMagneticHooks; /// Contains all magnetic hooks
 	UPROPERTY()
@@ -39,6 +63,10 @@ public:
 		class UCameraComponent* FPSCameraComponent;
 	UPROPERTY(EditDefaultsOnly, Category = Components)
 		class USceneComponent* GrabbedObjectLocation;
+	UPROPERTY()
+		AActor* MainPlayerActor; /// The actual player actor
+	UPROPERTY()
+		UPhysicsConstraintComponent* PhysicsConstraint;
 
 	// Called every frame
 	virtual void Tick(float DeltaTime) override;
@@ -68,6 +96,11 @@ public:
 	/// </summary>
 	void CheckNearbyMagneticHooks();
 
+	/// <summary>
+	/// Ends the game and shows an ending screen
+	/// </summary>
+	void EndSimulation();
+
 	/// Handles input for moving forward and backward.
 	UFUNCTION()
 		void MoveForward(float Value);
@@ -79,4 +112,15 @@ public:
 	/// Handles input for moving up and down.
 	UFUNCTION()
 		void MoveUp(float Value);
+
+private:
+	int MaxProgressTransport; /// Number of things to transport
+	int CurrentProgressTransport; /// How many transported so far
+
+	/// Used to interpolate end velocity to smoothly stop player
+	float TimeElapsed;
+	bool bEndMovement;
+
+	UPROPERTY(EditAnywhere)
+	float LerpDuration;
 };

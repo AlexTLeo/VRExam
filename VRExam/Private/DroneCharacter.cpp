@@ -3,7 +3,14 @@
 
 #include "DroneCharacter.h"
 #include "Kismet/KismetMathLibrary.h"
+#include "Math/UnrealMathVectorCommon.h" 
 #include "Kismet/GameplayStatics.h" 
+#include "DrawDebugHelpers.h" 
+#include "MyUI.h"
+#include "MyEndingScreenUI.h"
+#include "Blueprint/UserWidget.h"
+#include "GameFramework/PawnMovementComponent.h" 
+#include "GameFramework/MovementComponent.h" 
 
 // Sets default values
 ADroneCharacter::ADroneCharacter()
@@ -22,6 +29,21 @@ ADroneCharacter::ADroneCharacter()
 
 	MinDistanceToMagHook = 200;
 	DistanceToClosestHook = INT_MAX;
+
+	// UI
+	PlayerUIClass = nullptr;
+	PlayerUI = nullptr;
+	EndingScreenUIClass = nullptr;
+	EndingScreenUI = nullptr;
+
+	// Game Progress
+	MaxProgressTransport = 2;
+	CurrentProgressTransport = 0;
+
+	// Ending velocity lerp
+	TimeElapsed = 0;
+	LerpDuration = 3;
+	bEndMovement = false;
 }
 
 // Called when the game starts or when spawned
@@ -30,7 +52,36 @@ void ADroneCharacter::BeginPlay()
 	Super::BeginPlay();
 	
 	check(GEngine != nullptr);
-	GEngine->AddOnScreenDebugMessage(-1, 5.0f, FColor::Red, TEXT("We are using FPSCharacter."));
+	//GEngine->AddOnScreenDebugMessage(-1, 5.0f, FColor::Red, TEXT("We are using FPSCharacter."));
+
+	// UI
+	if (IsLocallyControlled() && PlayerUIClass) {
+		APlayerController * MyController = Cast<APlayerController>(GetController());
+		check(MyController);
+		PlayerUI = CreateWidget<UMyUI>(MyController, PlayerUIClass);
+		check(PlayerUI);
+		PlayerUI->AddToPlayerScreen();
+		PlayerUI->SetProgressTransport(0, 1); // Reset progress
+	}
+
+	MainPlayerActor = Cast<AActor>(UGameplayStatics::GetPlayerPawn(GetWorld(), 0));
+
+	// The grabbed object should maintain its collision with the environment
+	if (MainPlayerActor != nullptr) {
+		PhysicsConstraint = Cast<UPhysicsConstraintComponent>(NewObject<UPhysicsConstraintComponent>(MainPlayerActor,
+			UPhysicsConstraintComponent::StaticClass(), FName(TEXT("PhysicsConstraint"))));
+		PhysicsConstraint->RegisterComponent();
+		PhysicsConstraint->AttachToComponent(Cast<USceneComponent>(MainPlayerActor->GetComponentByClass(USceneComponent::StaticClass())),
+			FAttachmentTransformRules::SnapToTargetNotIncludingScale, FName("GrabbedObjectSocket"));
+
+		PhysicsConstraint->ConstraintInstance.SetAngularSwing1Motion(EAngularConstraintMotion::ACM_Locked);
+		PhysicsConstraint->ConstraintInstance.SetAngularSwing2Motion(EAngularConstraintMotion::ACM_Locked);
+		PhysicsConstraint->ConstraintInstance.SetAngularTwistMotion(EAngularConstraintMotion::ACM_Locked);
+		PhysicsConstraint->ConstraintInstance.SetLinearXMotion(ELinearConstraintMotion::LCM_Locked);
+		PhysicsConstraint->ConstraintInstance.SetLinearYMotion(ELinearConstraintMotion::LCM_Locked);
+		PhysicsConstraint->ConstraintInstance.SetLinearZMotion(ELinearConstraintMotion::LCM_Locked);
+		PhysicsConstraint->ConstraintInstance.ProfileInstance.bDisableCollision = true;
+	}
 }
 
 // Called every frame
@@ -38,7 +89,27 @@ void ADroneCharacter::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
 
-	// CheckNearbyMagneticHooks();
+	// Find closest magnetic hook
+	CheckNearbyMagneticHooks();
+
+	if (bEndMovement) {
+		// Get the Pawn of the main player and stop its movement slowly, interpolating via FMath::Lerp
+		APlayerController* MyController = Cast<APlayerController>(GetController());
+		APawn* PlayerPawn = MyController->GetPawn();
+		if (PlayerPawn) {
+			UMovementComponent* PlayerPawnMovement = Cast<UMovementComponent>(PlayerPawn->GetMovementComponent());
+			if (PlayerPawnMovement) {
+				PlayerPawnMovement->Velocity = FMath::Lerp(PlayerPawnMovement->Velocity, FVector(0, 0, 0), TimeElapsed / LerpDuration);
+				TimeElapsed += UGameplayStatics::GetWorldDeltaSeconds(this);
+
+				double ErrorFromZero = FVector3d::Distance(PlayerPawnMovement->Velocity, FVector(0, 0, 0));
+
+				if (ErrorFromZero == 0) {
+					bEndMovement = false;
+				}
+			}
+		}
+	}
 }
 
 // Called to bind functionality to input
@@ -85,22 +156,41 @@ void ADroneCharacter::EndGrab() {
 	// Check if we actually have an object grabbed
 	if (GrabbedObject) {
 		// Check if we are near a magnetic hook or not
-		if (ClosestMagneticHook && DistanceToClosestHook <= 200) {
+		if (ClosestMagneticHook && DistanceToClosestHook <= MinDistanceToMagHook) {
 			// If so, attach the object to the mag hook
-			GrabbedObject->DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);
-			USceneComponent* MagSocketLocation = Cast<USceneComponent>(ClosestMagneticHook->GetComponentByClass(USceneComponent::StaticClass()));
+	
+			USceneComponent* MagHook = Cast<USceneComponent>(ClosestMagneticHook->GetComponentByClass(USceneComponent::StaticClass()));
 
-			FTransform wTo = GrabbedObject->GetComponentTransform();
-			FVector CoM = UKismetMathLibrary::InverseTransformLocation(wTo, GrabbedObject->GetCenterOfMass());
-			MagSocketLocation->SetRelativeLocation(CoM);
+			//FTransform wTo = GrabbedObject->GetComponentTransform();
+			//FVector CoM = UKismetMathLibrary::InverseTransformLocation(wTo, GrabbedObject->GetCenterOfMass());
+			//GrabbedObject->SetRelativeLocation(CoM);
 
-			GrabbedObject->AttachToComponent(MagSocketLocation, FAttachmentTransformRules::SnapToTargetNotIncludingScale, FName(TEXT("MagneticSocket")));
+			//GrabbedObject->DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);
+			PhysicsConstraint->BreakConstraint();
+			GrabbedObject->AttachToComponent(MagHook, FAttachmentTransformRules::KeepWorldTransform, FName(TEXT("MagneticSocket")));
+			GrabbedObject->SetAllPhysicsRotation(FRotator(0.0f, 0.0f, 0.0f));
+			GrabbedObject->SetSimulatePhysics(false); // Turn physics off for the object
+
+			// Update transport progress and crate status
+			CurrentProgressTransport++;
+			GrabbedObjectCrateHandler->SetHooked(true);
+
+			// If met goals, end the game!
+			if (CurrentProgressTransport >= MaxProgressTransport) {
+				EndSimulation();
+			} else if (PlayerUI) {
+				PlayerUI->SetProgressTransport(CurrentProgressTransport, MaxProgressTransport);
+			}
+
+			SetGrabbedObject(nullptr);
 		} else {
 			// If not near a magnetic hook, simply release the object
+
 			const float ThrowStrength = 50.0f;
 			const FVector ThrowVelocity = FPSCameraComponent->GetForwardVector() * ThrowStrength;
 
-			GrabbedObject->DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);
+			//GrabbedObject->DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);
+			PhysicsConstraint->BreakConstraint();
 			GrabbedObject->SetSimulatePhysics(true); // Turn physics back on for grabbed object
 			GrabbedObject->AddImpulse(ThrowVelocity, NAME_None, true);
 
@@ -111,20 +201,34 @@ void ADroneCharacter::EndGrab() {
 
 void ADroneCharacter::SetGrabbedObject(UPrimitiveComponent* ObjectToGrab) {
 	GrabbedObject = ObjectToGrab;
+	GrabbedObjectCrateHandler = nullptr; // Reset handler
 
 	if (GrabbedObject) {
-		GrabbedObject->SetSimulatePhysics(false); // Momentarily turn physics off for grabbed object
-		// Align the object to the centre of the screen
-		FTransform wTo = GrabbedObject->GetComponentTransform();
-		FVector CoM = UKismetMathLibrary::InverseTransformLocation(wTo, GrabbedObject->GetCenterOfMass());
-		CoM.X += 200;
-		CoM.Z = (-CoM.Z);
-		GrabbedObjectLocation->SetRelativeLocation(CoM);
-		GrabbedObject->AttachToComponent(GrabbedObjectLocation, FAttachmentTransformRules::SnapToTargetNotIncludingScale);
+		// Check if this object was already magnetised somewhere
+		AActor* GrabbedObjectActor = GrabbedObject->GetOwner();
+		if (GrabbedObjectActor) {
+			UMagCrateComponent* MagCrate = Cast<UMagCrateComponent>(GrabbedObjectActor->GetComponentByClass(UMagCrateComponent::StaticClass()));
+			if (MagCrate) {
+				GrabbedObjectCrateHandler = MagCrate;
 
-		// Highlight all magnetic hooks
-		// TODO
-		CheckNearbyMagneticHooks();
+				bool wasHooked = MagCrate->GetHooked();
+				// Update transport progress and crate status
+				if (wasHooked) {
+					CurrentProgressTransport--;
+					GrabbedObjectCrateHandler->SetHooked(false);
+				}
+
+				if (PlayerUI) {
+					PlayerUI->SetProgressTransport(CurrentProgressTransport, MaxProgressTransport);
+				}
+			}
+		}
+
+		// Free the object in case it is attached to anything
+		GrabbedObject->DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);
+		// Attach object to the player
+		GrabbedObject->SetSimulatePhysics(true); // Turn physics back on for grabbed object
+		PhysicsConstraint->SetConstrainedComponents(GrabbedObject, NAME_None, Cast<UPrimitiveComponent>(MainPlayerActor->GetComponentByClass(USceneComponent::StaticClass())), NAME_None);
 
 		UE_LOG(LogTemp, Warning, TEXT("Number of detected hooks: %d"), AllMagneticHooks.Num());
 	}
@@ -134,7 +238,7 @@ void ADroneCharacter::MoveForward(float Value)
 {
 	// Find out which way is "forward" and record that the player wants to move that way.
 	FVector Direction = FRotationMatrix(Controller->GetControlRotation()).GetUnitAxis(EAxis::X);
-	AddMovementInput(Direction, Value);
+	AddMovementInput(Direction, Value/2);
 }
 
 void ADroneCharacter::CheckNearbyMagneticHooks() {
@@ -162,6 +266,30 @@ void ADroneCharacter::CheckNearbyMagneticHooks() {
 		}
 
 		ClosestMagneticHook = AllMagneticHooks[IndexOfClosestHook];
+
+		// If close enough, trace a line from the grabbed object to the hook
+		if (DistanceToClosestHook <= MinDistanceToMagHook) {
+			DrawDebugLine(GetWorld(), GrabbedObject->GetComponentLocation(), ClosestMagneticHook->GetActorLocation(), FColor(0, 255, 0), false, -1.0f, 1, 1.0f);
+		} else {
+			// Otherwise show a semi-transparent grey line
+			DrawDebugLine(GetWorld(), GrabbedObject->GetComponentLocation(), ClosestMagneticHook->GetActorLocation(), FColor(200, 200, 200, 125), false, -1.0f, 1, 1.0f);
+		}
+	}
+}
+
+void ADroneCharacter::EndSimulation() {
+	if (IsLocallyControlled() && EndingScreenUIClass) {
+		APlayerController* MyController = Cast<APlayerController>(GetController());
+		check(MyController);
+		EndingScreenUI = CreateWidget<UMyEndingScreenUI>(MyController, EndingScreenUIClass);
+		check(EndingScreenUI);
+		check(PlayerUI);
+		PlayerUI->RemoveFromViewport();
+		PlayerUI->RemoveFromParent();
+		EndingScreenUI->AddToPlayerScreen();
+		PlayerUI = nullptr;
+		DisableInput(MyController);
+		bEndMovement = true;
 	}
 }
 
@@ -169,12 +297,12 @@ void ADroneCharacter::MoveRight(float Value)
 {
 	// Find out which way is "right" and record that the player wants to move that way.
 	FVector Direction = FRotationMatrix(Controller->GetControlRotation()).GetUnitAxis(EAxis::Y);
-	AddMovementInput(Direction, Value);
+	AddMovementInput(Direction, Value/2);
 }
 
 void ADroneCharacter::MoveUp(float Value)
 {
 	// Find out which way is "right" and record that the player wants to move that way.
 	FVector Direction = FVector(0, 0, 1);
-	AddMovementInput(Direction, Value);
+	AddMovementInput(Direction, Value/2);
 }

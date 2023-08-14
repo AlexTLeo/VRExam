@@ -4,17 +4,20 @@
 
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
-#include "TableActorComponent.generated.h"
+#include "MagCrateComponent.generated.h"
 
 
 UCLASS( ClassGroup=(Custom), meta=(BlueprintSpawnableComponent) )
-class UTableActorComponent : public UActorComponent
+class VREXAM_API UMagCrateComponent : public UActorComponent
 {
 	GENERATED_BODY()
 
 public:	
+	UPROPERTY()
+		bool IsHooked; /// Is hooked to a mag hook?
+
 	// Sets default values for this component's properties
-	UTableActorComponent();
+	UMagCrateComponent();
 
 protected:
 	// Called when the game starts
@@ -23,6 +26,17 @@ protected:
 public:	
 	// Called every frame
 	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
+	
+	/// <summary>
+	///  Sets IsHooked to Status
+	/// </summary>
+	UFUNCTION()
+	void SetHooked(bool Status);
 
+	/// <summary>
+	///  Get IsHooked (is crate currently hooked to a maghook?)
+	/// </summary>
+	UFUNCTION()
+	bool GetHooked();
 		
 };
